@@ -119,7 +119,7 @@ class ServerRecipe(BaseRecipe):
         except ImportError:
             from openerp.tools.config import configmanager
 
-        configmanager(self.config_path).save()
+        configmanager().save(self.config_path)
 
     def _create_gunicorn_conf(self, qualified_name):
         """Put a gunicorn_PART.conf.py script in /etc.

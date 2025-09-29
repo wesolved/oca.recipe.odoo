@@ -8,7 +8,17 @@ from optparse import OptionParser  # we support python >= 2.6
 
 try:  # Allow nose to import this path
     import odoo
-    startup = odoo.cli.server
+    try:
+        # Prefer the modern CLI module (Odoo 11+ incl. 19.0)
+        from odoo.cli import server as cli_server
+        check_root_user = getattr(cli_server, 'check_root_user', lambda: None)
+        check_postgres_user = getattr(cli_server, 'check_postgres_user', lambda: None)
+    except Exception:
+        # Fallback for older Odoo versions: define no-ops if not available
+        def check_root_user():
+            return None
+        def check_postgres_user():
+            return None
     config = odoo.tools.config
     SUPERUSER_ID = odoo.SUPERUSER_ID
     parse_version = odoo.tools.parse_version
@@ -128,6 +138,10 @@ class Session(object):
     def ready(self):
         return self._registry is not None
 
+    def _get_with_demo(self, default=False):
+        """Resolve with_demo from the session if already set, otherwise from config."""
+        return getattr(self, 'with_demo', config.get('with_demo', default))
+
     def open(self, db=None, with_demo=False):
         """Load the database
 
@@ -155,6 +169,9 @@ class Session(object):
         """
         if db is None:
             db = config['db_name']
+            # Normalize possible multi-db configuration (list/tuple) to a single db name
+            if isinstance(db, (list, tuple)):
+                db = db[0] if db else ''
         if not db:
             db = ''  # expected value expected by Odoo to start defaulting.
 
@@ -163,16 +180,17 @@ class Session(object):
         self.is_initialization = not odoo.modules.db.is_initialized(cr)
         cr.close()
 
-        startup.check_root_user()
+        check_root_user()
         if not os.environ.get('ENABLE_POSTGRES_USER'):
-            startup.check_postgres_user()
+            check_postgres_user()
         odoo.netsvc.init_logger()
 
-        saved_without_demo = config['without_demo']
+        saved_with_demo = config.get('with_demo', False)
         if with_demo is None:
-            with_demo = config['without_demo']
+            with_demo = self._get_with_demo(saved_with_demo)
 
-        config['without_demo'] = not with_demo
+        # Odoo 19 stores 'with_demo' directly (no 'without_demo')
+        config['with_demo'] = with_demo
         self.with_demo = with_demo
 
         if version_info[0] <= 10:
@@ -181,7 +199,7 @@ class Session(object):
         else:
             # Form Odoo 11.0: no get method available
             self._registry = Registry(db)
-        config['without_demo'] = saved_without_demo
+        config['with_demo'] = saved_with_demo
         self.init_cursor()
         self.uid = SUPERUSER_ID
         self.init_environments()
@@ -268,6 +286,18 @@ class Session(object):
         been used : this helps building an usable default.
         """
         return OdooVersion(vstring)
+
+    def _current_with_demo(self, default=False):
+        """Return the effective with_demo value.
+
+        Priority:
+        1) self.with_demo if already set during this Session lifecycle
+        2) config['with_demo'] if present
+        3) provided default
+        """
+        if hasattr(self, 'with_demo'):
+            return bool(self.with_demo)
+        return bool(config.get('with_demo', default))
 
     @property
     def db_version(self):
@@ -399,14 +429,17 @@ class Session(object):
 
         if self.cr is not None:
             self.close()
+        saved_with_demo = config.get('with_demo', False)
+
+        # with update_modules_list=False, an explicitely named DB would not
+        # have gone through open() yet.
+        config['with_demo'] = self.with_demo
         for module in modules:
-            config['update'][module] = 1
-        if version_info[0] <= 10:
-            self._registry = Registry.get(db, update_module=True)
-        else:
-            # Form Odoo 11.0: no get method available
-            self._registry = Registry(db)
-        config['update'].clear()
+            config['init'][module] = 1
+        self._registry = Registry.new(
+            db, update_module=True, force_demo=self.with_demo)
+        config['init'].clear()
+        config['with_demo'] = saved_with_demo
         self.init_cursor()
         self.clean_environments()
 
@@ -448,17 +481,17 @@ class Session(object):
 
         if self.cr is not None:
             self.close()
-        saved_without_demo = config['without_demo']
+        saved_with_demo = config.get('with_demo', False)
 
         # with update_modules_list=False, an explicitely named DB would not
         # have gone through open() yet.
-        config['without_demo'] = not getattr(self, 'with_demo', open_with_demo)
+        config['with_demo'] = self._get_with_demo(saved_with_demo)
         for module in modules:
             config['init'][module] = 1
         self._registry = Registry.new(
-            db, update_module=True, force_demo=self.with_demo)
+            db, update_module=True, new_db_demo=self._get_with_demo(None))
         config['init'].clear()
-        config['without_demo'] = saved_without_demo
+        config['with_demo'] = saved_with_demo
         self.init_cursor()
         self.clean_environments()
 

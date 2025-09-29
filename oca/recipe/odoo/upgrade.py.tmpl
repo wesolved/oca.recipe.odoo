@@ -15,5 +15,18 @@ def run(session, logger):
                     "script is at : %s (byte-compiled form)",
                     __file__)
         return
-    logger.info("Default upgrade procedure : updating all modules.")
-    session.update_modules(['all'])
+    try:
+        logger.info("Default upgrade procedure : updating all modules.")
+        session.update_modules(['all'])
+        session.cr.commit()
+
+        # Re-open and regenerate assets bundles (core)
+        session.open(session.cr.dbname)
+        session.env['ir.attachment'].regenerate_assets_bundles()
+        session.cr.commit()
+    finally:
+        if getattr(session, 'cr', None):
+            try:
+                session.close()
+            except Exception:
+                logger.exception("Error while closing session")
