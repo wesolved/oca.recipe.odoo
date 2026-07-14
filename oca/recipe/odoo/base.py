@@ -8,13 +8,19 @@ import tarfile
 import setuptools
 import logging
 import stat
-import imp
+import importlib.util
 import shutil
 try:
     from ConfigParser import ConfigParser, RawConfigParser  # Python 2
 except ImportError:
     from configparser import ConfigParser, RawConfigParser  # Python 3
-import distutils.core
+try:
+    import distutils.core  # removed from the stdlib in Python 3.12
+except ImportError:
+    # setuptools >= 60 ships a vendored distutils; importing it first
+    # registers the shim that makes ``import distutils.core`` resolve again.
+    import setuptools  # noqa: F401
+    import distutils.core
 import pkg_resources
 import zipimport
 try:
@@ -53,6 +59,22 @@ copyreg.pickle(zipimport.zipimporter, lambda x: (x.__class__, (x.archive, )))
 
 if sys.version_info >= (2, 7):
     unicode = str
+
+
+def load_source_module(name, file_obj, path):
+    """Load and execute a .py file as a module.
+
+    Replacement for the ``imp.load_module(..., imp.PY_SOURCE)`` calls that
+    were used before ``imp`` was removed from the stdlib in Python 3.12.
+    Reads from an already-open binary file object, registers the module in
+    ``sys.modules`` and returns it, mirroring the old behaviour.
+    """
+    source = file_obj.read()
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    exec(compile(source, path, 'exec'), module.__dict__)
+    return module
 
 
 def rfc822_time(h):
@@ -537,8 +559,7 @@ class BaseRecipe(object):
         used to list dependencies.
         """
         with open(join(self.odoo_dir, 'bin', 'release.py'), 'rb') as f:
-            mod = imp.load_module('release', f, 'release.py',
-                                  ('.py', 'r', imp.PY_SOURCE))
+            mod = load_source_module('release', f, 'release.py')
         self.version_detected = mod.version
 
     def read_odoo_setup(self):
@@ -559,8 +580,7 @@ class BaseRecipe(object):
             saved_argv = sys.argv
             sys.argv = ['setup.py', 'develop']
             try:
-                imp.load_module('setup', f, 'setup.py',
-                                ('.py', 'r', imp.PY_SOURCE))
+                load_source_module('setup', f, 'setup.py')
             except SystemExit as exception:
                 if 'dsextras' in unicode(exception):
                     raise EnvironmentError(
