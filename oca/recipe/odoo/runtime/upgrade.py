@@ -6,7 +6,7 @@ taking logic.
 """
 import os
 import sys
-import imp
+import importlib.util
 import logging
 from argparse import ArgumentParser
 from argparse import ArgumentDefaultsHelpFormatter
@@ -18,6 +18,20 @@ from ..utils import total_seconds
 from .session import Session
 
 DEFAULT_LOG_FILE = 'upgrade.log'
+
+
+def load_source_module(name, path):
+    """Load and execute a .py file as a module.
+
+    Replacement for the ``imp.load_source`` call that was used before ``imp``
+    was removed from the stdlib in Python 3.12. Registers the module in
+    ``sys.modules`` and returns it, mirroring the old behaviour.
+    """
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def upgrade(upgrade_script, upgrade_callable, conf, buildout_dir):
@@ -146,8 +160,8 @@ def upgrade(upgrade_script, upgrade_callable, conf, buildout_dir):
     else:
         logger.info("Database latest upgrade version : %s", db_version)
 
-    upgrade_module = imp.load_source('oca.recipe.odoo.upgrade_odoo',
-                                     upgrade_script)
+    upgrade_module = load_source_module('oca.recipe.odoo.upgrade_odoo',
+                                        upgrade_script)
     statuscode = getattr(upgrade_module, upgrade_callable)(session, logger)
     if statuscode is None or statuscode == 0:
         if pkg_version is not None:
